@@ -1,0 +1,91 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker.js'
+      - 'wrangler.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: '本次部署原因（仅记录在 run 摘要里）'
+        required: false
+        default: '手动触发'
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy worker + sync secrets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLINE_REFRESH_TOKEN: ${{ secrets.CLINE_REFRESH_TOKEN }}
+      API_KEY: ${{ secrets.API_KEY }}
+      WORKER_NAME: cline2api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          # 允许 esbuild / workerd 的 postinstall
+          NPM_CONFIG_ALLOW_SCRIPTS: 'esbuild,workerd'
+
+      - name: Verify required secrets are present
+        env:
+          MISSING: ''
+        run: |
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLINE_REFRESH_TOKEN API_KEY; do
+            if [ -z "${!v}" ]; then
+              echo "::error::缺少 secret $v"
+              MISSING=1
+            fi
+          done
+          [ "$MISSING" = "1" ] && exit 1
+          echo "所有必需 secret 已就绪"
+
+      - name: Deploy worker
+        run: npx wrangler deploy
+
+      - name: Push CLINE_REFRESH_TOKEN as encrypted secret
+        run: printf '%s' "$CLINE_REFRESH_TOKEN" | npx wrangler secret put CLINE_REFRESH_TOKEN --name "$WORKER_NAME"
+
+      - name: Push API_KEY as encrypted secret
+        run: printf '%s' "$API_KEY" | npx wrangler secret put API_KEY --name "$WORKER_NAME"
+
+      - name: Smoke test /v1/health
+        env:
+          SUBDOMAIN: ${{ vars.WORKERS_SUBDOMAIN }}
+        run: |
+          if [ -z "$SUBDOMAIN" ]; then
+            echo "::notice::未配置仓库变量 WORKERS_SUBDOMAIN，跳过健康检查"
+            exit 0
+          fi
+          BASE="https://$WORKER_NAME.$SUBDOMAIN.workers.dev"
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 5
+            if curl -fsS "$BASE/v1/health"; then
+              echo ""
+              echo "部署成功: $BASE"
+              exit 0
+            fi
+            echo "等待 $i/10 ..."
+          done
+          echo "::warning::健康检查未通过，请手动查看 $BASE/v1/health"
