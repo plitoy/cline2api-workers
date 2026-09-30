@@ -72,13 +72,13 @@ jobs:
 
       - name: Smoke test /v1/health
         env:
-          SUBDOMAIN: ${{ vars.WORKERS_SUBDOMAIN }}
+          DOMAIN: ${{ vars.CUSTOM_DOMAIN }}
         run: |
-          if [ -z "$SUBDOMAIN" ]; then
-            echo "::notice::未配置仓库变量 WORKERS_SUBDOMAIN，跳过健康检查"
+          if [ -z "$DOMAIN" ]; then
+            echo "::notice::未配置仓库变量 CUSTOM_DOMAIN，跳过健康检查"
             exit 0
           fi
-          BASE="https://$WORKER_NAME.$SUBDOMAIN.workers.dev"
+          BASE="https://$DOMAIN"
           for i in 1 2 3 4 5 6 7 8 9 10; do
             sleep 5
             if curl -fsS "$BASE/v1/health"; then

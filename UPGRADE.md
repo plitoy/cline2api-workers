@@ -9,12 +9,27 @@
 | 本 fork | `plitoy/cline2api-workers` |
 | 上游 | `pingmike2/cline2api-workers` |
 | Worker 名称 | `cline2api` |
-| 线上地址 | `https://cline2api.plitoy.workers.dev` |
-| Base URL（OpenAI 客户端填这个） | `https://cline2api.plitoy.workers.dev/v1` |
+| 线上地址 | `https://api.1788.dpdns.org` |
+| Base URL（OpenAI 客户端填这个） | `https://api.1788.dpdns.org/v1` |
 | 部署方式 | push 到 `main` → GitHub Actions 自动 `wrangler deploy` |
+| workers.dev 子域 | **已关闭**，只有自定义域可用 |
 
 > ⚠️ 本 fork **没有**使用 Cloudflare Dashboard 的「Git 集成」。上游 README 里警告的是那条路，容易因入口文件/构建环境失败。
 > 这里走的是独立的 GitHub Actions + `wrangler deploy`，不受该问题影响。
+
+### workers.dev 为什么必须显式关掉
+
+`wrangler.toml` 里写死了两行，**别删**：
+
+```toml
+workers_dev = false
+routes = [
+  { pattern = "api.1788.dpdns.org", custom_domain = true },
+]
+```
+
+不写 `workers_dev = false` 的话，每次 `wrangler deploy` 都会把 `cline2api.plitoy.workers.dev` 重新打开。
+`routes` 则让自定义域的绑定跟着代码走，这样即使 Worker 被删掉重建，域名也会自动绑回来。
 
 ## 仓库 secrets
 
@@ -27,7 +42,7 @@ Settings → Secrets and variables → Actions → **Secrets**：
 | `CLINE_REFRESH_TOKEN` | Cline 账号长期令牌 | Cline 返回 401/403 时（见下） |
 | `API_KEY` | 客户端访问本服务的 key | 想轮换客户端密钥时 |
 
-仓库 **Variables**（非 secret）：`WORKERS_SUBDOMAIN` = `plitoy`，仅用于部署后的健康检查拼 URL。
+仓库 **Variables**（非 secret）：`CUSTOM_DOMAIN` = `api.1788.dpdns.org`，仅用于部署后的健康检查拼 URL。
 
 **本 fork 对 `.gitignore` 的增量**：额外屏蔽 `cline_refresh_token.txt`、`cline_state.json`、`step*_*.py`，防止本地换 token 时误提交。这些文件只存在于本地。
 
@@ -100,7 +115,7 @@ git commit -am "chore: bump wrangler" && git push
 ## 验证部署成功
 
 ```bash
-curl https://cline2api.plitoy.workers.dev/v1/health
+curl https://api.1788.dpdns.org/v1/health
 ```
 
 期望：`{"ok":true,"version":"...","authenticated":true,"accounts":1,"model":"..."}`

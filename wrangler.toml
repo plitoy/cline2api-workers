@@ -2,5 +2,15 @@ name = "cline2api"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
-# 部署后输出 https://cline2api.<你的子域>.workers.dev
-# 注意：CLINE_REFRESH_TOKEN 必须用 wrangler secret 设置，不要写在这里！
+# 只通过自定义域提供服务。
+# workers_dev = false 必须显式写死：否则每次 wrangler deploy 都会把
+# cline2api.<子域>.workers.dev 重新打开。
+workers_dev = false
+
+# 自定义域（CF 会自动签发证书并绑定到本 Worker）。
+# zone 1788.dpdns.org 已在同一账号下，wrangler 能自行解析，无需写 zone_id。
+routes = [
+  { pattern = "api.1788.dpdns.org", custom_domain = true },
+]
+
+# 注意：CLINE_REFRESH_TOKEN / API_KEY 必须用 wrangler secret 设置，不要写在这里！
