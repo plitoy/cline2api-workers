@@ -13,6 +13,7 @@
 | Base URL（OpenAI 客户端填这个） | `https://api.1788.dpdns.org/v1` |
 | 部署方式 | push 到 `main` → GitHub Actions 自动 `wrangler deploy` |
 | workers.dev 子域 | **已关闭**，只有自定义域可用 |
+| 账号池 | 2 个（见下方「账号池」） |
 
 > ⚠️ 本 fork **没有**使用 Cloudflare Dashboard 的「Git 集成」。上游 README 里警告的是那条路，容易因入口文件/构建环境失败。
 > 这里走的是独立的 GitHub Actions + `wrangler deploy`，不受该问题影响。
@@ -99,18 +100,64 @@ git commit -am "chore: bump wrangler" && git push
 
 `/auth/refresh` 可能返回**新的** `refreshToken`（`worker.js` 内部会保存到内存，所以 Worker 自身不受影响）。但如果你在本地手工调过 `auth/refresh` 而丢弃了新值，仓库里存的旧值可能已经 `invalid_grant`。遇到这种情况直接重跑 `cline_oauth.py` 换一个新的，别试图抢救旧的。
 
-## 多账号
+## 账号池
 
-`CLINE_REFRESH_TOKEN` 机密变量支持**一行一个 token**，多行即账号池：
+`CLINE_REFRESH_TOKEN` 机密变量支持**一行一个 token**，多行即账号池。
 
+### 当前账号
+
+| # | 邮箱 | 加入时间 |
+|---|---|---|
+| 1 | `hynize@gmail.com` | 2026-09-30 03:35 |
+| 2 | `wfu.lee@gmail.com` | 2026-09-30 04:42 |
+
+本地副本（含明文 token，注意别提交）：
+`C:\Users\wfule\AppData\Local\Temp\opencode\cline_pool.txt`
+`cline_refresh_token.txt` = 账号 1，`cline_refresh_token_2.txt` = 账号 2。
+
+### 上限
+
+代码侧无上限（`worker.js:192` 只做 `split("\n")` + `filter(len > 8)`）。真正的天花板是
+**单个机密变量 5 KB**：当前 token 为 25 字符 + 换行 = 26 字节，`5120 / 26 ≈ 196` 个。
+但真正的约束是运维摩擦 —— 换任意一个账号的 token 都要重写整个多行 secret 并重新部署。
+
+### 加账号的完整流程
+
+```powershell
+# 1. 取新 token（浏览器登录新账号并授权）
+$env:PYTHONIOENCODING="utf-8"; $env:PYTHONUTF8="1"
+python -u step1_device.py                          # 打印 AUTH_URL
+start chrome $AUTH_URL                              # 浏览器里授权
+python -u step2_register.py 240 cline_refresh_token_N.txt
+
+# 2. 追加进本地池（注意是追加，不要覆盖整个文件）
+Add-Content C:\Users\wfule\AppData\Local\Temp\opencode\cline_pool.txt "<新 token>"
+
+# 3. 整池写回 secret + 重新部署
+Get-Content C:\Users\wfule\AppData\Local\Temp\opencode\cline_pool.txt -Raw |
+  gh secret set CLINE_REFRESH_TOKEN --repo plitoy/cline2api-workers
+gh workflow run "Deploy to Cloudflare Workers" --repo plitoy/cline2api-workers
+
+# 4. 核对
+curl -s https://api.1788.dpdns.org/v1/health          # accounts 应等于账号数
 ```
-第一个账号的refreshToken
-第二个账号的refreshToken
-```
 
-但注意：**Actions 里读 `secrets.CLINE_REFRESH_TOKEN` 是单个值**。GitHub secrets 可以存多行文本，`printf '%s' "$VAR"` 会原样写入，Worker 端按行切分，所以多账号在自动部署下同样可用——只是每次换其中一个账号的 token，都得把全部账号的 token 重新写进 secret。
+### 两个坑
 
-配额用完时 Worker 会解析上游冷却提示（`Try again in Xh Xm`）并自动切号，不需要干预。
+1. **`filter(len > 8)` 会静默丢弃长度 ≤ 8 的行**。粘贴截断、空行、表头都会被无声吃掉，
+   账号直接从池子消失，**不报错**。所以每次改完 secret 一定要核对 `/v1/health` 的
+   `accounts` 数字，别只看部署是否成功。
+2. **round-robin 不是全局的**。`accountIndex` 是模块级变量，Cloudflare 会同时跑多个
+   isolate，每个 isolate 各有一份计数器。所以是「大致均摊」而非严格交替，
+   没有任何响应头能反映当次用了哪个账号。整体上 N 个账号 ≈ N 倍日配额。
+
+### 关于 refreshToken 轮换
+
+实测（Cline 官方 API，2026-09-30 逐个验活）：**`/auth/refresh` 不返回新 refreshToken**，
+两个账号都是「有效、未轮换」。所以仓库 secret 里存的原始 token 可以一直用。
+
+`worker.js` 里保留了轮换处理（万一将来上游改成轮换也不会炸），但你**不需要**为此做任何事。
+
 
 ## 验证部署成功
 
@@ -118,10 +165,10 @@ git commit -am "chore: bump wrangler" && git push
 curl https://api.1788.dpdns.org/v1/health
 ```
 
-期望：`{"ok":true,"version":"...","authenticated":true,"accounts":1,"model":"..."}`
+期望：`{"ok":true,"version":"...","authenticated":true,"accounts":2,"model":"..."}`
 
 - `authenticated: true` = `API_KEY` 变量已生效
-- `accounts: 1` = `CLINE_REFRESH_TOKEN` 已生效
+- `accounts: 2` = `CLINE_REFRESH_TOKEN` 里解析出 2 个账号（**这只数行数，不验活**）
 
 workflow 末尾已内置这一步冒烟检查，Actions 绿了基本就是好的。
 
